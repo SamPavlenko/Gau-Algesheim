@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Klimaanpassungskonzept VG Gau-Algesheim: Bürgerbeteiligung</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+
+<style>
+
+body {
+  margin: 0;
+}
+
+#map {
+  height: 100vh;
+}
+
+#formBox {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1000;
+  background: white;
+  padding: 12px;
+  border-radius: 8px;
+  box-shadow: 0 0 8px rgba(0,0,0,0.2);
+  font-size: 14px;
+  width: 250px;
+}
+
+#saveBtn {
+  margin-top: 8px;
+  width: 100%;
+  padding: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(0,0,0,0.2);
+}
+
+</style>
+</head>
+
+<body>
+
+<div id="formBox">
+
+<b>Meldung eintragen</b>
+<br><br>
+
+Kategorie:
+<br>
+<select id="category" style="width:100%">
+  <option value="Hitze">Hitze</option>
+  <option value="Starkregen">Starkregen</option>
+  <option value="Hochwasser">Hochwasser</option>
+  <option value="Starkwind">Starkwind</option>
+  <option value="Weiteres">Weiteres</option>
+</select>
+
+<br><br>
+
+Beschreibung:
+<br>
+<textarea id="comment" rows="3" style="width:100%"
+placeholder="Text eingeben..."></textarea>
+
+<br>
+
+<button id="saveBtn" disabled>Eintrag speichern</button>
+
+<p id="hint">
+Klicke zuerst auf die Karte - dann speichern.
+</p>
+
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+  
+<script>
+
+// ================== FIREBASE ==================
+
+const firebaseConfig = {
+
+  apiKey: "AIzaSyAaHSE4KO5EWZJcMf0oxk0tigJk1opvLeo",
+
+  authDomain: "gau-algesheim-22f09.firebaseapp.com",
+
+  projectId: "gau-algesheim-22f09",
+
+  storageBucket: "gau-algesheim-22f09.firebasestorage.app",
+
+  messagingSenderId: "240387111947",
+
+  appId: "1:240387111947:web:9d8437c245a1fa02d8db0e"
+
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+const auth = firebase.auth();
+
+auth.signInAnonymously()
+  .then(() => {
+    console.log("Anonym eingeloggt");
+  })
+  .catch((error) => {
+    console.error("Auth Fehler:", error);
+  });
+  
+
+  
+// ================== MAP ==================
+
+const map = L.map('map').setView([49.958, 8.013], 14);
+
+map.createPane("maskPane");
+map.getPane("maskPane").style.zIndex = 200;
+map.getPane("maskPane").style.pointerEvents = "none";
+  
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: "© OpenStreetMap"
+}).addTo(map);
+
+const markerLayer = L.layerGroup().addTo(map);
+
+let tempMarker = null;
+let selectedLatLng = null;
+let cityBoundary = null;
+
+
+// ================== LOAD CITY BOUNDARY ==================
+
+fetch("vg_ga.geojson")
+  .then(res => res.json())
+  .then(data => {
+
+    cityGeoJSON = data;
+
+    const cityLayer = L.geoJSON(data, {
+      style: {
+        color: "black",
+        weight: 2,
+        fillOpacity: 0
+      }
+    }).addTo(map);
+
+    map.fitBounds(cityLayer.getBounds());
+
+    createMask(data);
+  });
+
+
+// World mask with hole
+
+function createMask(cityData) {
+
+  const world = turf.polygon([[
+    [-180,-90],
+    [180,-90],
+    [180,90],
+    [-180,90],
+    [-180,-90]
+  ]]);
+
+  let cityUnion = cityData.features[0];
+
+  if (cityData.features.length > 1) {
+    for (let i = 1; i < cityData.features.length; i++) {
+      cityUnion = turf.union(cityUnion, cityData.features[i]);
+    }
+  }
+
+  const difference = turf.difference(world, cityUnion);
+
+  L.geoJSON(difference, {
+    style: {
+      fillColor: "black",
+      fillOpacity: 0.35,
+      stroke: false
+    },
+    interactive: false
+  }).addTo(map);
+}
+
+// ================== COLORS ==================
+
+function getColor(category) {
+
+  if (category === "Hitze") return "orange";
+  if (category === "Starkregen") return "blue";
+  if (category === "Hochwasser") return "brown";
+  if (category === "Weiteres") return "green";
+  if (category === "Starkwind") return "yellow";
+
+  return "black";
+}
+
+// ================== DRAW MARKER ==================
+
+function drawMarker(docId, lat, lng, category, comment, likes, likedBy) {
+
+  const colors = {
+    Hitze: "orange",
+    Starkregen: "blue",
+    Hochwasser: "brown",
+    Starkwind: "yellow",
+    Weiteres: "green"
+  };
+
+  const user = firebase.auth().currentUser;
+  const userId = user ? user.uid : null;
+
+  const hasLiked = userId && likedBy && likedBy.includes(userId);
+
+  const buttonLabel = hasLiked ? "Unlike 👎" : "Like 👍";
+
+  L.circleMarker([lat, lng], {
+    radius: 8,
+    fillColor: colors[category] || "black",
+    color: "#000",
+    weight: 1,
+    fillOpacity: 0.8
+  })
+  .bindPopup(
+    "<b>Kategorie:</b> " + category +
+    "<br><b>Info:</b> " + comment +
+    "<br><br>👍 Likes: " + (likes || 0) +
+    "<br><button onclick=\"toggleLike('" + docId + "')\">" + buttonLabel + "</button>"
+  )
+  .addTo(markerLayer);
+}
+
+// ================== SAVE ==================
+
+document.getElementById("saveBtn").onclick = function() {
+
+  if (!selectedLatLng) return;
+
+  const category = document.getElementById("category").value;
+  const comment = document.getElementById("comment").value;
+
+  if (comment.trim() === "") {
+    alert("Bitte Text eingeben.");
+    return;
+  }
+
+  db.collection("marker").add({
+    lat: selectedLatLng.lat,
+    lng: selectedLatLng.lng,
+    category: category,
+    comment: comment,
+    timestamp: new Date(),
+    approved: false,
+    likes: 0,
+    likedBy: []
+  })
+  .then((docRef) => {
+
+    console.log("Saved to Firestore!");
+
+    // ✅ Marker sofort anzeigen (auch wenn noch nicht approved)
+    drawMarker(
+      docRef.id,
+      selectedLatLng.lat,
+      selectedLatLng.lng,
+      category,
+      comment,
+      0
+    );
+
+    // Formular zurücksetzen
+    if (tempMarker) map.removeLayer(tempMarker);
+    tempMarker = null;
+    selectedLatLng = null;
+
+    document.getElementById("comment").value = "";
+    document.getElementById("saveBtn").disabled = true;
+    document.getElementById("hint").innerText =
+      "Klicke auf die Karte für neuen Punkt.";
+
+  })
+  .catch((error) => {
+    console.error("Error saving:", error);
+    alert("Fehler beim Speichern. Prüfe Firestore-Regeln.");
+  });
+
+};
+
+// ================== MAP CLICK ==================
+map.on('click', function(e) {
+
+  if (!cityGeoJSON) return;
+
+  const point = turf.point([e.latlng.lng, e.latlng.lat]);
+
+  let inside = false;
+
+  cityGeoJSON.features.forEach(feature => {
+    if (turf.booleanPointInPolygon(point, feature)) {
+      inside = true;
+    }
+  });
+
+  if (!inside) {
+    alert("Marker nur innerhalb der Grenze der Verbandsgemeinde erlaubt.");
+    return;
+  }
+
+  selectedLatLng = e.latlng;
+
+  if (tempMarker) map.removeLayer(tempMarker);
+
+  tempMarker = L.marker(e.latlng).addTo(map);
+
+  document.getElementById("saveBtn").disabled = false;
+  document.getElementById("hint").innerText =
+    "Jetzt Kategorie auswählen und speichern.";
+});
+
+
+// ================== LOAD EXISTING ==================
+
+
+db.collection("marker")
+  .where("approved", "==", true)
+  .onSnapshot(snapshot => {
+
+    markerLayer.clearLayers();
+
+    snapshot.forEach(doc => {
+      const data = doc.data();
+
+      drawMarker(
+        doc.id,
+        data.lat,
+        data.lng,
+        data.category,
+        data.comment,
+        data.likes,
+        data.likedBy
+      );
+    });
+
+  });
+
+// ================== LIKE FUNCTION ==================
+
+function toggleLike(id) {
+
+  const user = firebase.auth().currentUser;
+  if (!user) return;
+
+  const userId = user.uid;
+  const ref = db.collection("marker").doc(id);
+
+  ref.get().then(doc => {
+
+    const data = doc.data();
+    const hasLiked = data.likedBy && data.likedBy.includes(userId);
+
+    if (hasLiked) {
+      // 👎 Unlike
+      ref.update({
+        likes: firebase.firestore.FieldValue.increment(-1),
+        likedBy: firebase.firestore.FieldValue.arrayRemove(userId)
+      });
+    } else {
+      // 👍 Like
+      ref.update({
+        likes: firebase.firestore.FieldValue.increment(1),
+        likedBy: firebase.firestore.FieldValue.arrayUnion(userId)
+      });
+    }
+
+  });
+
+}
+  
+</script>
+</body>
+</html>
